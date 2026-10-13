@@ -184,3 +184,26 @@ test "sequence comparison uses wrapping signed difference" {
   assert_true(!kcp_seq_less(7L, 7L))
   assert_true(kcp_seq_less(0x7FFFFFFFL, 0x80000000L))
 }
+
+///|
+test "decoder rejects invalid payload octets and oversized declared lengths" {
+  let payload = match kcp_encode_segment(wire_test_segment(Push, [7])) {
+    Ok(bytes) => bytes
+    Err(_) => fail("test segment should encode")
+  }
+  payload[24] = -1
+  assert_true(kcp_decode_datagram(payload) is Err(InvalidByte(24, -1)))
+
+  let declared_length = match kcp_encode_segment(wire_test_segment(Ack, [])) {
+    Ok(bytes) => bytes
+    Err(_) => fail("empty ACK should encode")
+  }
+  declared_length[20] = 255
+  declared_length[21] = 255
+  declared_length[22] = 255
+  declared_length[23] = 255
+  assert_true(
+    kcp_decode_datagram(declared_length)
+    is Err(TruncatedPayload(0, 4294967295L, 0)),
+  )
+}
