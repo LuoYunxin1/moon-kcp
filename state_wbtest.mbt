@@ -417,6 +417,44 @@ test "later ACKs trigger fast retransmit for missing earlier segments" {
 }
 
 ///|
+test "fast ACK timestamps gate and saturate duplicate evidence" {
+  let config = kcp_default_config()
+  config.set_windows(8, 128)
+  config.set_fast_resend(3)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(97L, config)
+  ignore(sender.send([0]))
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  ignore(state_test_take_datagrams(sender.update(100L)))
+
+  let stale_timestamp = state_test_datagram([
+    state_test_segment(97L, Ack, 3L, 0L, 128, 99L, 0, []),
+  ])
+  ignore(state_test_input(sender, stale_timestamp))
+  assert_eq(sender.send_buffer.length(), 3)
+  for entry in sender.send_buffer {
+    assert_eq(entry.fast_ack, 0)
+  }
+
+  let current_timestamp = state_test_datagram([
+    state_test_segment(97L, Ack, 3L, 0L, 128, 100L, 0, []),
+  ])
+  let mut duplicate = 0
+  while duplicate < 1000 {
+    ignore(state_test_input(sender, current_timestamp))
+    duplicate += 1
+  }
+  for entry in sender.send_buffer {
+    assert_eq(entry.fast_ack, 3)
+  }
+  let retransmitted = state_test_take_datagrams(sender.update(110L))
+  assert_eq(retransmitted.length(), 1)
+  assert_eq(sender.stats().fast_retransmissions, 3)
+}
+
+///|
 test "window probe and window-tell commands are caller driven" {
   let config = kcp_default_config()
   config.set_interval(10)

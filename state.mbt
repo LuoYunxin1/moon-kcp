@@ -951,7 +951,8 @@ pub fn KcpControl::input(
   if has_max_ack && kcp_sequence_in_range(max_ack, self.snd_una, self.snd_nxt) {
     for entry in self.send_buffer {
       if kcp_seq_less(entry.segment.sn, max_ack) &&
-        kcp_time_diff(max_ack_ts, entry.segment.ts) >= 0L {
+        kcp_time_diff(max_ack_ts, entry.segment.ts) >= 0L &&
+        entry.fast_ack < self.config.fast_resend {
         entry.fast_ack += 1
       }
     }
