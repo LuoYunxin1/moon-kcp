@@ -785,3 +785,132 @@ test "receive queue backpressure preserves retryable later segments" {
   assert_eq(receiver.stats().received_payload_bytes, 1401)
   assert_eq(receiver.stats().malformed_datagrams, 0)
 }
+
+///|
+test "deterministic two-peer link recovers fragmented messages under faults" {
+  let config = kcp_default_config()
+  config.set_windows(8, 8)
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  config.set_rto_limits(10, 40, 160)
+  config.set_resource_limits(4096, 12000, 2)
+  let sender = state_test_control(90L, config)
+  let receiver = state_test_control(90L, config)
+  let expected = [
+    Array::make(2500, 17),
+    Array::make(2900, 29),
+    Array::make(1700, 41),
+  ]
+  assert_eq(sender.send(expected[0]), Ok(2))
+  assert_eq(sender.send(expected[1]), Ok(3))
+  assert_eq(sender.send(expected[2]), Ok(2))
+
+  let mut dropped_push = false
+  let mut reordered_push = false
+  let mut duplicated_push = false
+  let mut held_pushes : Array[Array[Int]] = []
+  let mut dropped_ack = false
+  let delivered : Array[Array[Int]] = []
+  let mut tick = 0
+  while tick < 100 &&
+        (
+          sender.waitsnd_segments() > 0 ||
+          delivered.length() < expected.length()
+        ) {
+    let now = (tick * 10).to_int64()
+    let outbound = state_test_take_datagrams(sender.update(now))
+    for datagram in outbound {
+      assert_true(datagram.length() <= config.mtu)
+      let segments = match kcp_decode_datagram(datagram) {
+        Ok(decoded) => decoded
+        Err(_) => fail("simulated link received an invalid sender datagram")
+      }
+      assert_true(segments.length() <= config.max_segments_per_datagram)
+      let has_push = segments.any(fn(segment) { segment.cmd == Push })
+      if has_push && !dropped_push {
+        dropped_push = true
+      } else if has_push && !reordered_push {
+        held_pushes.push(datagram)
+        reordered_push = true
+      } else {
+        ignore(state_test_input(receiver, datagram))
+        if has_push && !duplicated_push {
+          ignore(state_test_input(receiver, datagram))
+          duplicated_push = true
+        }
+        if held_pushes.length() > 0 {
+          ignore(state_test_input(receiver, held_pushes[0]))
+          held_pushes = []
+        }
+      }
+    }
+
+    let acknowledgements = state_test_take_datagrams(receiver.update(now))
+    for datagram in acknowledgements {
+      assert_true(datagram.length() <= config.mtu)
+      let segments = match kcp_decode_datagram(datagram) {
+        Ok(decoded) => decoded
+        Err(_) => fail("simulated link received an invalid receiver datagram")
+      }
+      assert_true(segments.length() <= config.max_segments_per_datagram)
+      let has_ack = segments.any(fn(segment) { segment.cmd == Ack })
+      if has_ack && !dropped_ack {
+        dropped_ack = true
+      } else {
+        ignore(state_test_input(sender, datagram))
+      }
+    }
+
+    let mut receiving = true
+    while receiving {
+      match receiver.recv() {
+        Some(message) => {
+          assert_true(delivered.length() < expected.length())
+          assert_eq(message, expected[delivered.length()])
+          delivered.push(message)
+        }
+        None => receiving = false
+      }
+    }
+
+    assert_true(sender.waitsnd_bytes() <= config.max_queued_bytes)
+    let send_segment_limit = kcp_int_min(
+      config.max_queued_bytes / kcp_config_mss(config),
+      kcp_hard_max_queued_segments,
+    )
+    assert_true(sender.waitsnd_segments() <= send_segment_limit)
+    assert_true(
+      receiver.receive_queue_bytes + receiver.receive_buffer_bytes <=
+      config.max_queued_bytes,
+    )
+    assert_true(
+      receiver.receive_queue_segments + receiver.receive_buffer.length() <=
+      config.receive_window,
+    )
+    let pending_ack_limit = kcp_int_min(
+      config.max_queued_bytes / kcp_header_size,
+      config.receive_window * 4,
+    )
+    assert_true(receiver.pending_acks.length() <= pending_ack_limit)
+    tick += 1
+  }
+
+  assert_true(dropped_push)
+  assert_true(reordered_push)
+  assert_true(duplicated_push)
+  assert_true(dropped_ack)
+  assert_eq(held_pushes.length(), 0)
+  assert_eq(delivered.length(), expected.length())
+  assert_eq(sender.waitsnd_segments(), 0)
+  assert_eq(sender.waitsnd_bytes(), 0)
+  assert_eq(sender.send_queue.length(), 0)
+  assert_eq(sender.send_buffer.length(), 0)
+  assert_true(sender.stats().timeout_retransmissions > 0)
+  assert_eq(receiver.pending_messages(), 0)
+  assert_eq(receiver.receive_queue.length(), 0)
+  assert_eq(receiver.receive_buffer.length(), 0)
+  assert_eq(receiver.receive_queue_bytes, 0)
+  assert_eq(receiver.receive_buffer_bytes, 0)
+  assert_eq(receiver.receive_queue_segments, 0)
+  assert_eq(receiver.pending_acks.length(), 0)
+}
