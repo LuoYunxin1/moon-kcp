@@ -227,12 +227,103 @@ test "receive window and queued zero-byte segments have finite bounds" {
   ])
   assert_true(receiver.input(impossible_chain) is Err(ReceiveWindowOverflow))
   assert_eq(receiver.next_receive_sequence(), 0L)
+  assert_eq(receiver.pending_messages(), 0)
+  assert_eq(receiver.stats().received_datagrams, 1)
+  assert_eq(receiver.stats().received_segments, 1)
+  assert_eq(receiver.stats().malformed_datagrams, 1)
 
   let send_config = kcp_default_config()
   send_config.set_resource_limits(0, 1400, 16)
   let sender = state_test_control(15L, send_config)
   assert_eq(sender.send([]), Ok(1))
   assert_true(sender.send([]) is Err(QueueSegmentLimitExceeded(1, 1)))
+}
+
+///|
+test "eligible oversized PUSH follows wire order and later input recovers" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(4 * 1376, 4 * 1024 * 1024, 32)
+  let control = state_test_control(31L, config)
+  ignore(control.send([9]))
+  ignore(state_test_take_datagrams(control.update(100L)))
+
+  let mixed = state_test_datagram([
+    state_test_segment(31L, Push, 0L, 0L, 4, 10L, 0, [1]),
+    state_test_segment(31L, Ack, 0L, 0L, 4, 100L, 0, []),
+    state_test_segment(31L, Push, 1L, 0L, 4, 11L, 4, [2]),
+  ])
+  assert_true(control.input(mixed) is Err(ReceiveWindowOverflow))
+
+  // This is a per-segment error, not a transaction rollback: earlier PUSH and
+  // ACK effects remain. The malformed counter records the rejected datagram.
+  assert_eq(control.next_receive_sequence(), 1L)
+  assert_eq(control.pending_messages(), 1)
+  assert_eq(control.waitsnd_segments(), 0)
+  assert_eq(control.pending_acks.length(), 1)
+  assert_eq(control.stats().received_datagrams, 1)
+  assert_eq(control.stats().received_segments, 3)
+  assert_eq(control.stats().received_payload_bytes, 1)
+  assert_eq(control.stats().malformed_datagrams, 1)
+  assert_eq(control.snd_una, 1L)
+
+  let recovery = state_test_datagram([
+    state_test_segment(31L, Push, 1L, 0L, 4, 12L, 0, [2]),
+  ])
+  let report = state_test_input(control, recovery)
+  assert_eq(report.accepted_payload_bytes, 1)
+  assert_eq(control.next_receive_sequence(), 2L)
+  assert_eq(control.pending_messages(), 2)
+  assert_eq(control.snd_una, 1L)
+  assert_eq(control.recv(), Some([1]))
+  assert_eq(control.recv(), Some([2]))
+  assert_eq(control.stats().received_datagrams, 2)
+}
+
+///|
+test "oversized out-of-window PUSH keeps window handling priority" {
+  let config = kcp_default_config()
+  config.set_windows(2, 2)
+  config.set_resource_limits(2 * 1376, 4 * 1024 * 1024, 32)
+  let control = state_test_control(32L, config)
+  ignore(control.send([9]))
+  ignore(state_test_take_datagrams(control.update(100L)))
+
+  // After PUSH sn=0 advances rcv_nxt, sn=3 is still outside [1, 3).
+  let mixed = state_test_datagram([
+    state_test_segment(32L, Push, 0L, 0L, 2, 10L, 0, [1]),
+    state_test_segment(32L, Ack, 0L, 0L, 2, 100L, 0, []),
+    state_test_segment(32L, Push, 3L, 0L, 2, 11L, 255, [2]),
+  ])
+  let report = state_test_input(control, mixed)
+  assert_eq(report.ignored_out_of_window, 1)
+  assert_eq(control.next_receive_sequence(), 1L)
+  assert_eq(control.pending_messages(), 1)
+  assert_eq(control.waitsnd_segments(), 0)
+  assert_eq(control.pending_acks.length(), 1)
+  assert_eq(control.stats().out_of_window_segments, 1)
+  assert_eq(control.stats().malformed_datagrams, 0)
+}
+
+///|
+test "oversized duplicate PUSH is acknowledged before fragment validation" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(4 * 1376, 4 * 1024 * 1024, 32)
+  let control = state_test_control(33L, config)
+  let duplicate = state_test_datagram([
+    state_test_segment(33L, Push, 0L, 0L, 4, 10L, 0, [1]),
+    state_test_segment(33L, Push, 0L, 0L, 4, 11L, 255, [9]),
+  ])
+  let report = state_test_input(control, duplicate)
+  assert_eq(report.accepted_payload_bytes, 1)
+  assert_eq(control.next_receive_sequence(), 1L)
+  assert_eq(control.pending_messages(), 1)
+  assert_eq(control.pending_acks.length(), 2)
+  assert_eq(control.stats().received_payload_bytes, 1)
+  assert_eq(control.stats().out_of_window_segments, 0)
+  assert_eq(control.stats().malformed_datagrams, 0)
+  assert_eq(control.recv(), Some([1]))
 }
 
 ///|

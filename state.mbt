@@ -797,8 +797,9 @@ fn KcpControl::kcp_control_reassemble(
 }
 
 ///|
-/// Validate and consume one peer datagram. Parsing and conversation validation
-/// complete before any transport state is changed.
+/// Validate and consume one peer datagram. Framing, conversation, and command
+/// validation complete before state changes; sequence-dependent PUSH handling
+/// then follows wire order, including errors raised for eligible segments.
 pub fn KcpControl::input(
   self : Self,
   bytes : Array[Int],
