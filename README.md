@@ -47,7 +47,7 @@ The host sends each returned datagram through its chosen network API and passes 
 - `send(message)` copies and fragments a bounded application message.
 - `update(now_ms)` advances the u32 KCP clock and returns due output datagrams.
 - `input(datagram)` validates the complete datagram before consuming its segments.
-- `recv()` removes the oldest complete ordered message, when available.
+- `peek_message_size()` reports the oldest complete message length without consuming it; `recv()` then removes that message.
 - `check(now_ms)` reports the next caller update time; no timer is started internally.
 - `flush()` emits pending ACKs, probes, new sends, and due retransmissions.
 

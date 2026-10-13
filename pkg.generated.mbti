@@ -73,6 +73,7 @@ pub fn KcpControl::input(Self, Array[Int]) -> Result[KcpInputReport, KcpStateErr
 pub fn KcpControl::maximum_segment_payload(Self) -> Int
 pub fn KcpControl::next_receive_sequence(Self) -> Int64
 pub fn KcpControl::next_send_sequence(Self) -> Int64
+pub fn KcpControl::peek_message_size(Self) -> Int?
 pub fn KcpControl::pending_messages(Self) -> Int
 pub fn KcpControl::recv(Self) -> Array[Int]?
 pub fn KcpControl::send(Self, Array[Int]) -> Result[Int, KcpStateError]

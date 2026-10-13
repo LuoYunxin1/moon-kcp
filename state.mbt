@@ -1250,3 +1250,17 @@ pub fn KcpControl::check(
   }
   Ok(kcp_time_add(current, wait.to_int()))
 }
+
+///|
+/// Return the size of the oldest complete message without consuming it.
+///
+/// This lets callers check receive capacity or prepare a destination buffer
+/// before calling `recv`. The value is `None` while the next ordered message
+/// is incomplete or the receive queue is empty.
+pub fn KcpControl::peek_message_size(self : Self) -> Int? {
+  if self.receive_messages.length() == 0 {
+    None
+  } else {
+    Some(self.receive_messages[0].data.length())
+  }
+}
