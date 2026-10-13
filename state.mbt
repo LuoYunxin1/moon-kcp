@@ -1074,7 +1074,9 @@ pub fn KcpControl::flush(
   if !self.config.no_congestion_control {
     send_limit = kcp_int_min(send_limit, self.congestion_window)
   }
-  while self.send_queue.length() > 0 && self.send_buffer.length() < send_limit {
+  while self.send_queue.length() > 0 &&
+        kcp_sequence_distance(self.snd_una, self.snd_nxt) <
+        send_limit.to_int64() {
     let queued = self.send_queue[0]
     self.send_queue = kcp_remove_segment_at(self.send_queue, 0)
     let segment : KcpSegment = {

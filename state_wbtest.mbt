@@ -96,6 +96,106 @@ test "ACK and UNA release flight state and sample RTT across a wrap-safe clock" 
 }
 
 ///|
+test "selective ACK holes hold the send window until UNA advances" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(4 * 1376, 4 * 1024 * 1024, 32)
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(70L, config)
+  ignore(sender.send([0]))
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  ignore(sender.send([4]))
+
+  let initial = state_test_take_datagrams(sender.update(100L))
+  assert_eq(initial.length(), 1)
+  assert_eq(sender.snd_una, 0L)
+  assert_eq(sender.next_send_sequence(), 4L)
+  assert_eq(sender.waitsnd_segments(), 5)
+
+  let selective_acks = state_test_datagram([
+    state_test_segment(70L, Ack, 1L, 0L, 4, 100L, 0, []),
+    state_test_segment(70L, Ack, 2L, 0L, 4, 100L, 0, []),
+    state_test_segment(70L, Ack, 3L, 0L, 4, 100L, 0, []),
+  ])
+  let report = state_test_input(sender, selective_acks)
+  assert_eq(report.acknowledgements, 3)
+  assert_eq(sender.snd_una, 0L)
+  assert_eq(sender.waitsnd_segments(), 2)
+
+  assert_eq(state_test_take_datagrams(sender.update(110L)).length(), 0)
+  assert_eq(sender.next_send_sequence(), 4L)
+  assert_eq(sender.send_queue.length(), 1)
+
+  let first_ack = state_test_datagram([
+    state_test_segment(70L, Ack, 0L, 0L, 4, 100L, 0, []),
+  ])
+  ignore(state_test_input(sender, first_ack))
+  assert_eq(sender.snd_una, 4L)
+  let resumed = state_test_take_datagrams(sender.update(120L))
+  assert_eq(resumed.length(), 1)
+  let resumed_segments = match kcp_decode_datagram(resumed[0]) {
+    Ok(segments) => segments
+    Err(_) => fail("resumed output must decode")
+  }
+  assert_eq(resumed_segments[0].sn, 4L)
+  assert_eq(sender.next_send_sequence(), 5L)
+  assert_eq(sender.send_queue.length(), 0)
+}
+
+///|
+test "selective ACK send window preserves its hole across u32 wrap" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(4 * 1376, 4 * 1024 * 1024, 32)
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(71L, config)
+  sender.snd_una = 0xFFFFFFFEL
+  sender.snd_nxt = 0xFFFFFFFEL
+  ignore(sender.send([0]))
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  ignore(sender.send([4]))
+
+  let initial = state_test_take_datagrams(sender.update(100L))
+  assert_eq(initial.length(), 1)
+  assert_eq(sender.snd_una, 0xFFFFFFFEL)
+  assert_eq(sender.next_send_sequence(), 2L)
+
+  let selective_acks = state_test_datagram([
+    state_test_segment(71L, Ack, 0xFFFFFFFFL, 0xFFFFFFFEL, 4, 100L, 0, []),
+    state_test_segment(71L, Ack, 0L, 0xFFFFFFFEL, 4, 100L, 0, []),
+    state_test_segment(71L, Ack, 1L, 0xFFFFFFFEL, 4, 100L, 0, []),
+  ])
+  let report = state_test_input(sender, selective_acks)
+  assert_eq(report.acknowledgements, 3)
+  assert_eq(sender.snd_una, 0xFFFFFFFEL)
+
+  assert_eq(state_test_take_datagrams(sender.update(110L)).length(), 0)
+  assert_eq(sender.next_send_sequence(), 2L)
+  assert_eq(sender.send_queue.length(), 1)
+
+  let first_ack = state_test_datagram([
+    state_test_segment(71L, Ack, 0xFFFFFFFEL, 0xFFFFFFFEL, 4, 100L, 0, []),
+  ])
+  ignore(state_test_input(sender, first_ack))
+  assert_eq(sender.snd_una, 2L)
+  let resumed = state_test_take_datagrams(sender.update(120L))
+  assert_eq(resumed.length(), 1)
+  let resumed_segments = match kcp_decode_datagram(resumed[0]) {
+    Ok(segments) => segments
+    Err(_) => fail("resumed output must decode")
+  }
+  assert_eq(resumed_segments[0].sn, 2L)
+  assert_eq(sender.next_send_sequence(), 3L)
+  assert_eq(sender.send_queue.length(), 0)
+}
+
+///|
 test "timeout retransmission backs off and check points at the deadline" {
   let config = kcp_default_config()
   config.set_interval(100)
