@@ -648,3 +648,40 @@ test "sender pauses at a full receive window and resumes after window tell" {
   ignore(state_test_input(sender, final_ack[0]))
   assert_eq(sender.waitsnd_segments(), 0)
 }
+
+///|
+test "receive queue backpressure preserves retryable later segments" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(1400, 1400, 32)
+  let receiver = state_test_control(36L, config)
+  let first_message = state_test_datagram([
+    state_test_segment(36L, Push, 0L, 0L, 4, 10L, 0, Array::make(1376, 7)),
+  ])
+  ignore(state_test_input(receiver, first_message))
+  let retried_datagram = state_test_datagram([
+    state_test_segment(36L, Push, 0L, 0L, 4, 10L, 0, []),
+    state_test_segment(36L, Push, 1L, 0L, 4, 11L, 0, Array::make(25, 8)),
+  ])
+
+  assert_true(
+    receiver.input(retried_datagram) is Err(QueueLimitExceeded(1376, 1400)),
+  )
+  assert_eq(receiver.next_receive_sequence(), 1L)
+  assert_eq(receiver.pending_messages(), 1)
+  assert_eq(receiver.pending_acks.length(), 2)
+  assert_eq(receiver.stats().received_datagrams, 2)
+  assert_eq(receiver.stats().received_segments, 3)
+  assert_eq(receiver.stats().received_payload_bytes, 1376)
+  assert_eq(receiver.stats().malformed_datagrams, 0)
+
+  assert_eq(receiver.recv(), Some(Array::make(1376, 7)))
+  let retried = state_test_input(receiver, retried_datagram)
+  assert_eq(retried.segment_count, 2)
+  assert_eq(retried.accepted_payload_bytes, 25)
+  assert_eq(receiver.next_receive_sequence(), 2L)
+  assert_eq(receiver.pending_messages(), 1)
+  assert_eq(receiver.recv(), Some(Array::make(25, 8)))
+  assert_eq(receiver.stats().received_payload_bytes, 1401)
+  assert_eq(receiver.stats().malformed_datagrams, 0)
+}
