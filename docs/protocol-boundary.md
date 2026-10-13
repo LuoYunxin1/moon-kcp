@@ -14,6 +14,12 @@ A KCP segment has a 24-byte little-endian header: conversation id (u32), command
 - Schedule timeout and fast retransmission according to KCP v1 behavior.
 - Generate window probes and acknowledgements; report the next update/check deadline without owning a timer.
 
+## Input error semantics
+
+Wire framing, conversation IDs, and command values are checked across the decoded datagram before sequence-dependent state processing begins. After that preflight, segments are processed in wire order. A PUSH outside the receive window is ignored, while an already-received PUSH is acknowledged; both decisions precede fragment-chain validation. An eligible PUSH that violates the fragment or queue limit returns a structured error.
+
+This is not a transactional API: if an eligible segment fails after earlier segments in the same datagram have been processed, those earlier ACK, receive, window, and diagnostic effects are not rolled back. Callers should record the error and avoid blindly replaying the whole datagram.
+
 ## Explicitly outside scope
 
 No socket APIs, DNS, congestion-control redesign, encryption, authentication, multiplexing protocol, generic ARQ abstraction, or complete RPC/game service. The implementation must not claim that “sans-I/O” alone is novel. Unsupported upstream options or behavior must be documented and tested as such.

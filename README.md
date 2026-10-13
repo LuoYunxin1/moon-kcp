@@ -46,7 +46,7 @@ The host sends each returned datagram through its chosen network API and passes 
 - `new_kcp_control(conv, config)` validates and copies configuration.
 - `send(message)` copies and fragments a bounded application message.
 - `update(now_ms)` advances the u32 KCP clock and returns due output datagrams.
-- `input(datagram)` validates the complete datagram before consuming its segments.
+- `input(datagram)` validates framing, conversation IDs, and command values before changing transport state, then processes segments in wire order. A semantic error on an eligible PUSH can occur after earlier segments have already changed state; errors are not transaction rollbacks, so do not blindly replay a rejected datagram.
 - `peek_message_size()` reports the oldest complete message length without consuming it; `recv()` then removes that message.
 - `check(now_ms)` reports the next caller update time; no timer is started internally.
 - `flush()` emits pending ACKs, probes, new sends, and due retransmissions.
