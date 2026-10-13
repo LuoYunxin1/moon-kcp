@@ -17,18 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install MoonBit 0.1.20260920
+      - name: Install MoonBit 0.1.20261012
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s 0.1.20260920
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s 0.1.20261012
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
       - name: Show toolchain
         run: moon version --all
-      - name: Check formatting
-        run: moon fmt --check
-      - name: Verify generated interfaces
+      - name: Apply current MoonBit formatting and capture migration
         run: |
+          moon fmt
           moon info
-          git diff --exit-code -- '**/*.mbti' '**/pkg.generated.mbti'
+          if [ "${{ matrix.target }}" = "wasm-gc" ]; then
+            git diff --binary > /tmp/moonbit-toolchain-migration.patch
+            mkdir -p migration-artifact
+            cp /tmp/moonbit-toolchain-migration.patch migration-artifact/moonbit-toolchain-migration.patch
+            echo "Changed files after formatter/interface generation:"
+            git status --short
+          fi
       - name: Check library
         run: moon check --target ${{ matrix.target }} --deny-warn
       - name: Build library and examples
@@ -45,3 +50,13 @@ jobs:
           moon run examples/codec
           moon run examples/loopback
           moon run examples/retransmission
+      - name: Upload formatter migration for review
+        if: always() && matrix.target == 'wasm-gc'
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonbit-toolchain-migration
+          path: migration-artifact/moonbit-toolchain-migration.patch
+          if-no-files-found: warn
+      - name: Require source and interface changes to be committed
+        if: always()
+        run: git diff --exit-code
