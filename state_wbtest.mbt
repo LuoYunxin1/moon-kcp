@@ -385,12 +385,13 @@ test "stream mode coalesces only the unsent tail and preserves byte order" {
     Ok(1),
   )
   assert_eq(sender.send([21, 22, 23, 24, 25, 26, 27, 28, 29, 30]), Ok(1))
+  assert_eq(sender.send([31, 32]), Ok(0))
   assert_eq(sender.waitsnd_segments(), 2)
   assert_eq(sender.send_queue[0].data, [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     23, 24,
   ])
-  assert_eq(sender.send_queue[1].data, [25, 26, 27, 28, 29, 30])
+  assert_eq(sender.send_queue[1].data, [25, 26, 27, 28, 29, 30, 31, 32])
   assert_eq(sender.send_queue[0].frg, 0)
   assert_eq(sender.send_queue[1].frg, 0)
 
@@ -417,8 +418,14 @@ test "stream mode coalesces only the unsent tail and preserves byte order" {
       22, 23, 24,
     ]),
   )
-  assert_eq(receiver.recv(), Some([25, 26, 27, 28, 29, 30]))
+  assert_eq(receiver.recv(), Some([25, 26, 27, 28, 29, 30, 31, 32]))
   assert_true(receiver.recv() is None)
+
+  // An application write made after flush cannot coalesce into an in-flight tail.
+  assert_eq(sender.send([33]), Ok(1))
+  assert_eq(sender.send_queue.length(), 1)
+  assert_eq(sender.send_queue[0].data, [33])
+  assert_eq(sender.waitsnd_segments(), 3)
 }
 
 ///|

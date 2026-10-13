@@ -288,9 +288,11 @@ pub fn KcpControl::stats(self : Self) -> KcpStats {
 ///
 /// The peer is not contacted until the host calls `update` and sends the
 /// returned datagrams. A message must fit the configured byte and fragment
-/// limits. Its input byte array is copied before the function returns. In stream
-/// mode, unsent chunks may coalesce, so application write boundaries are not
-/// preserved as message boundaries.
+/// limits. Its input byte array is copied before the function returns. The result
+/// counts newly allocated KCP segments, not accepted bytes; in stream mode it can
+/// be zero when all bytes coalesce into an unsent segment. Unsent chunks may
+/// coalesce, so application write boundaries are not preserved as message
+/// boundaries.
 pub fn KcpControl::send(
   self : Self,
   message : Array[Int],
