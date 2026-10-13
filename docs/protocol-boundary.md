@@ -26,4 +26,4 @@ No socket APIs, DNS, congestion-control redesign, encryption, authentication, mu
 
 ## Numeric and resource invariants
 
-Protocol u32 values are compared using serial-number arithmetic, including wrap-around. Datagrams, queued bytes, fragment counts, and session windows need explicit limits. Arithmetic that would overflow a host integer or exceed configured bounds returns a structured error instead of panicking or allocating without limit.
+Protocol u32 values are compared using serial-number arithmetic, including wrap-around. Datagrams, queued bytes, fragment counts, and session windows need explicit limits. Pending ACKs are coalesced by sequence number and retained within a separate bounded budget; a repeated sequence keeps the newest serial timestamp. Arithmetic that would overflow a host integer or exceed configured bounds returns a structured error instead of panicking or allocating without limit.

@@ -70,7 +70,7 @@ priv struct KcpReceiveMessage {
 ///|
 priv struct KcpPendingAck {
   sn : Int64
-  ts : Int64
+  mut ts : Int64
 }
 
 ///|
@@ -659,6 +659,14 @@ fn KcpControl::kcp_control_push_pending_ack(
   sn : Int64,
   ts : Int64,
 ) -> Unit {
+  for pending in self.pending_acks {
+    if pending.sn == sn {
+      if kcp_time_diff(ts, pending.ts) >= 0L {
+        pending.ts = ts
+      }
+      return
+    }
+  }
   let cap = kcp_int_min(
     self.config.max_queued_bytes / kcp_header_size,
     self.config.receive_window * 4,

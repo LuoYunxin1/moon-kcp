@@ -246,6 +246,49 @@ test "input orders and reassembles fragments while rejecting duplicates" {
 }
 
 ///|
+test "pending ACKs coalesce by sequence and retain the newest timestamp" {
+  let receiver = state_test_control(98L, kcp_default_config())
+  let first_push = state_test_datagram([
+    state_test_segment(98L, Push, 0L, 0L, 128, 100L, 0, [7]),
+  ])
+  let retry_newer = state_test_datagram([
+    state_test_segment(98L, Push, 0L, 0L, 128, 120L, 0, [7]),
+  ])
+  let retry_stale = state_test_datagram([
+    state_test_segment(98L, Push, 0L, 0L, 128, 110L, 0, [7]),
+  ])
+  ignore(state_test_input(receiver, first_push))
+  ignore(state_test_input(receiver, retry_newer))
+  ignore(state_test_input(receiver, retry_stale))
+  assert_eq(receiver.pending_acks.length(), 1)
+  assert_eq(receiver.pending_acks[0].ts, 120L)
+
+  let acknowledgements = state_test_take_datagrams(receiver.update(130L))
+  assert_eq(acknowledgements.length(), 1)
+  let decoded = kcp_decode_datagram(acknowledgements[0]).unwrap()
+  assert_eq(decoded.length(), 1)
+  assert_eq(decoded[0].cmd, Ack)
+  assert_eq(decoded[0].sn, 0L)
+  assert_eq(decoded[0].ts, 120L)
+
+  let bounded = state_test_control(99L, kcp_default_config())
+  let mut sequence = 0
+  while sequence < 512 {
+    bounded.kcp_control_push_pending_ack(
+      sequence.to_int64(),
+      sequence.to_int64(),
+    )
+    sequence += 1
+  }
+  assert_eq(bounded.pending_acks.length(), 512)
+  bounded.kcp_control_push_pending_ack(10L, 600L)
+  bounded.kcp_control_push_pending_ack(10L, 500L)
+  bounded.kcp_control_push_pending_ack(512L, 700L)
+  assert_eq(bounded.pending_acks.length(), 512)
+  assert_eq(bounded.pending_acks[10].ts, 600L)
+}
+
+///|
 test "ACK and UNA release flight state and sample RTT across a wrap-safe clock" {
   let config = kcp_default_config()
   config.set_no_congestion_control(true)
@@ -666,7 +709,8 @@ test "oversized duplicate PUSH is acknowledged before fragment validation" {
   assert_eq(report.accepted_payload_bytes, 1)
   assert_eq(control.next_receive_sequence(), 1L)
   assert_eq(control.pending_messages(), 1)
-  assert_eq(control.pending_acks.length(), 2)
+  assert_eq(control.pending_acks.length(), 1)
+  assert_eq(control.pending_acks[0].ts, 11L)
   assert_eq(control.stats().received_payload_bytes, 1)
   assert_eq(control.stats().out_of_window_segments, 0)
   assert_eq(control.stats().malformed_datagrams, 0)
@@ -1021,7 +1065,7 @@ test "receive queue backpressure preserves retryable later segments" {
   )
   assert_eq(receiver.next_receive_sequence(), 1L)
   assert_eq(receiver.pending_messages(), 1)
-  assert_eq(receiver.pending_acks.length(), 2)
+  assert_eq(receiver.pending_acks.length(), 1)
   assert_eq(receiver.stats().received_datagrams, 2)
   assert_eq(receiver.stats().received_segments, 3)
   assert_eq(receiver.stats().received_payload_bytes, 1376)
