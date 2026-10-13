@@ -533,6 +533,64 @@ test "window probe and window-tell commands are caller driven" {
 }
 
 ///|
+test "window probes back off to their cap and reset on reopening" {
+  let config = kcp_default_config()
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  let control = state_test_control(100L, config)
+  ignore(
+    state_test_input(
+      control,
+      state_test_datagram([
+        state_test_segment(100L, WindowTell, 0L, 0L, 0, 0L, 0, []),
+      ]),
+    ),
+  )
+  assert_eq(state_test_take_datagrams(control.update(0L)).length(), 0)
+  assert_eq(control.probe_interval, 7000)
+  assert_eq(control.probe_deadline, 7000L)
+
+  let expected_intervals = [
+    10500, 15750, 23625, 35437, 53155, 79732, 119598, 120000, 120000,
+  ]
+  let mut now = 7000L
+  for expected in expected_intervals {
+    let datagrams = state_test_take_datagrams(control.update(now))
+    assert_eq(datagrams.length(), 1)
+    let segments = kcp_decode_datagram(datagrams[0]).unwrap()
+    assert_eq(segments.length(), 1)
+    assert_eq(segments[0].cmd, WindowAsk)
+    assert_eq(control.probe_interval, expected)
+    assert_eq(control.probe_deadline, now + expected.to_int64())
+    now = control.probe_deadline
+  }
+
+  ignore(
+    state_test_input(
+      control,
+      state_test_datagram([
+        state_test_segment(100L, WindowTell, 0L, 0L, 8, 0L, 0, []),
+      ]),
+    ),
+  )
+  ignore(state_test_take_datagrams(control.update(now)))
+  assert_eq(control.probe_interval, 0)
+  assert_eq(control.probe_deadline, 0L)
+
+  ignore(
+    state_test_input(
+      control,
+      state_test_datagram([
+        state_test_segment(100L, WindowTell, 0L, 0L, 0, 0L, 0, []),
+      ]),
+    ),
+  )
+  ignore(state_test_take_datagrams(control.update(now + 10L)))
+  assert_eq(control.probe_interval, 7000)
+  assert_eq(control.probe_deadline, now + 7010L)
+}
+
+///|
 test "sequence and timer serial arithmetic survives the u32 boundary" {
   let config = kcp_default_config()
   config.set_interval(10)
