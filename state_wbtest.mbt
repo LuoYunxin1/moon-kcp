@@ -595,3 +595,49 @@ test "queued byte budget stays occupied in flight and releases after acknowledgm
   assert_eq(sender.waitsnd_bytes(), 1)
   assert_eq(sender.waitsnd_segments(), 1)
 }
+
+///|
+test "sender pauses at a full receive window and resumes after window tell" {
+  let config = kcp_default_config()
+  config.set_windows(1, 1)
+  config.set_resource_limits(1376, 4 * 1024 * 1024, 32)
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(35L, config)
+  let receiver = state_test_control(35L, config)
+
+  assert_true(sender.send([1]) is Ok(1))
+  let first_send = state_test_take_datagrams(sender.update(0L))
+  assert_eq(first_send.length(), 1)
+  ignore(state_test_input(receiver, first_send[0]))
+  assert_eq(receiver.pending_messages(), 1)
+  assert_eq(receiver.kcp_control_receive_window(), 0)
+
+  let first_ack = state_test_take_datagrams(receiver.update(0L))
+  assert_eq(first_ack.length(), 1)
+  ignore(state_test_input(sender, first_ack[0]))
+  assert_eq(sender.remote_window, 0)
+  assert_true(sender.send([2]) is Ok(1))
+  assert_eq(state_test_take_datagrams(sender.update(10L)).length(), 0)
+  assert_eq(sender.waitsnd_segments(), 1)
+
+  assert_eq(receiver.recv(), Some([1]))
+  assert_eq(receiver.kcp_control_receive_window(), 1)
+  let window_tell = state_test_take_datagrams(receiver.update(10L))
+  assert_eq(window_tell.length(), 1)
+  let control_segments = kcp_decode_datagram(window_tell[0]).unwrap()
+  assert_eq(control_segments.length(), 1)
+  assert_eq(control_segments[0].cmd, WindowTell)
+  assert_eq(control_segments[0].wnd, 1)
+  ignore(state_test_input(sender, window_tell[0]))
+  assert_eq(sender.remote_window, 1)
+
+  let resumed = state_test_take_datagrams(sender.update(20L))
+  assert_eq(resumed.length(), 1)
+  ignore(state_test_input(receiver, resumed[0]))
+  assert_eq(receiver.recv(), Some([2]))
+  let final_ack = state_test_take_datagrams(receiver.update(20L))
+  assert_eq(final_ack.length(), 1)
+  ignore(state_test_input(sender, final_ack[0]))
+  assert_eq(sender.waitsnd_segments(), 0)
+}
