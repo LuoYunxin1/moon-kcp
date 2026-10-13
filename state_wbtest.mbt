@@ -46,6 +46,160 @@ fn state_test_input(control : KcpControl, bytes : Array[Int]) -> KcpInputReport 
 }
 
 ///|
+test "batched cursor consumption preserves sequence, message order, and accounting" {
+  let config = kcp_default_config()
+  config.set_windows(512, 512)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(91L, config)
+  let mut index = 0
+  while index < 512 {
+    assert_eq(sender.send([index % 256]), Ok(1))
+    index += 1
+  }
+
+  let datagrams = state_test_take_datagrams(sender.update(100L))
+  let mut expected_sequence = 0L
+  let mut decoded_count = 0
+  for datagram in datagrams {
+    let segments = match kcp_decode_datagram(datagram) {
+      Ok(decoded) => decoded
+      Err(_) => fail("batched sender output must decode")
+    }
+    for segment in segments {
+      assert_eq(segment.cmd, Push)
+      assert_eq(segment.sn, expected_sequence)
+      assert_eq(segment.frg, 0)
+      assert_eq(segment.data, [decoded_count % 256])
+      expected_sequence += 1L
+      decoded_count += 1
+    }
+  }
+  assert_eq(decoded_count, 512)
+  assert_eq(sender.next_send_sequence(), 512L)
+  assert_eq(sender.send_queue.length(), 0)
+  assert_eq(sender.send_queue_bytes, 0)
+  assert_eq(sender.send_buffer.length(), 512)
+  assert_eq(sender.send_buffer_bytes, 512)
+  assert_eq(sender.waitsnd_segments(), 512)
+  assert_eq(sender.waitsnd_bytes(), 512)
+  assert_eq(sender.stats().sent_segments, 512)
+  assert_eq(sender.stats().sent_payload_bytes, 512)
+
+  let receiver = state_test_control(92L, config)
+  index = 0
+  while index < 512 {
+    receiver.receive_buffer.push({
+      conv: 92L,
+      cmd: Push,
+      frg: if index % 2 == 0 {
+        1
+      } else {
+        0
+      },
+      wnd: 512,
+      ts: 0L,
+      sn: index.to_int64(),
+      una: 0L,
+      data: [index % 256],
+    })
+    receiver.receive_buffer_bytes += 1
+    index += 1
+  }
+  receiver.kcp_control_move_contiguous_receive()
+  assert_eq(receiver.next_receive_sequence(), 512L)
+  assert_eq(receiver.receive_buffer.length(), 0)
+  assert_eq(receiver.receive_buffer_bytes, 0)
+  assert_eq(receiver.receive_queue.length(), 512)
+  assert_eq(receiver.receive_queue_segments, 512)
+  assert_eq(receiver.receive_queue_bytes, 512)
+
+  receiver.kcp_control_reassemble().unwrap()
+  assert_eq(receiver.receive_queue.length(), 0)
+  assert_eq(receiver.pending_messages(), 256)
+  assert_eq(receiver.receive_queue_segments, 512)
+  assert_eq(receiver.receive_queue_bytes, 512)
+  let mut message_index = 0
+  while message_index < 256 {
+    let first_byte = message_index * 2 % 256
+    let second_byte = (first_byte + 1) % 256
+    assert_eq(receiver.recv(), Some([first_byte, second_byte]))
+    message_index += 1
+  }
+  assert_eq(receiver.recv(), None)
+  assert_eq(receiver.receive_queue_segments, 0)
+  assert_eq(receiver.receive_queue_bytes, 0)
+  assert_eq(receiver.stats().delivered_messages, 256)
+}
+
+///|
+test "reassembly cursor keeps incomplete and malformed unconsumed suffixes" {
+  let gapped = state_test_control(95L, kcp_default_config())
+  gapped.receive_buffer = [
+    state_test_segment(95L, Push, 0L, 0L, 128, 1L, 0, [30]),
+    state_test_segment(95L, Push, 1L, 0L, 128, 2L, 0, [31]),
+    state_test_segment(95L, Push, 3L, 0L, 128, 4L, 0, [33]),
+  ]
+  gapped.receive_buffer_bytes = 3
+  gapped.kcp_control_move_contiguous_receive()
+  assert_eq(gapped.next_receive_sequence(), 2L)
+  assert_eq(gapped.receive_queue.length(), 2)
+  assert_eq(gapped.receive_queue_segments, 2)
+  assert_eq(gapped.receive_queue_bytes, 2)
+  assert_eq(gapped.receive_buffer.length(), 1)
+  assert_eq(gapped.receive_buffer[0].sn, 3L)
+  assert_eq(gapped.receive_buffer_bytes, 1)
+  gapped.kcp_control_reassemble().unwrap()
+  assert_eq(gapped.recv(), Some([30]))
+  assert_eq(gapped.recv(), Some([31]))
+  assert_eq(gapped.receive_queue_segments, 0)
+  assert_eq(gapped.receive_queue_bytes, 0)
+  assert_eq(gapped.receive_buffer.length(), 1)
+  assert_eq(gapped.receive_buffer_bytes, 1)
+
+  let incomplete = state_test_control(93L, kcp_default_config())
+  incomplete.receive_queue = [
+    state_test_segment(93L, Push, 0L, 0L, 128, 1L, 0, [1]),
+    state_test_segment(93L, Push, 1L, 0L, 128, 2L, 1, [2]),
+  ]
+  incomplete.receive_queue_segments = 2
+  incomplete.receive_queue_bytes = 2
+  assert_eq(incomplete.kcp_control_reassemble(), Ok(()))
+  assert_eq(incomplete.pending_messages(), 1)
+  assert_eq(incomplete.receive_queue.length(), 1)
+  assert_eq(incomplete.receive_queue[0].sn, 1L)
+  assert_eq(incomplete.receive_queue[0].frg, 1)
+  assert_eq(incomplete.receive_queue_segments, 2)
+  assert_eq(incomplete.receive_queue_bytes, 2)
+  assert_eq(incomplete.recv(), Some([1]))
+  assert_eq(incomplete.receive_queue_segments, 1)
+  assert_eq(incomplete.receive_queue_bytes, 1)
+  assert_eq(incomplete.receive_queue[0].sn, 1L)
+
+  let malformed = state_test_control(94L, kcp_default_config())
+  malformed.receive_queue = [
+    state_test_segment(94L, Push, 0L, 0L, 128, 1L, 1, [10]),
+    state_test_segment(94L, Push, 1L, 0L, 128, 2L, 0, [11]),
+    state_test_segment(94L, Push, 2L, 0L, 128, 3L, 2, [20]),
+    state_test_segment(94L, Push, 3L, 0L, 128, 4L, 2, [21]),
+    state_test_segment(94L, Push, 4L, 0L, 128, 5L, 0, [22]),
+  ]
+  malformed.receive_queue_segments = 5
+  malformed.receive_queue_bytes = 5
+  assert_true(malformed.kcp_control_reassemble() is Err(InvalidFragmentChain))
+  assert_eq(malformed.pending_messages(), 1)
+  assert_eq(malformed.receive_queue.length(), 3)
+  assert_eq(malformed.receive_queue[0].sn, 2L)
+  assert_eq(malformed.receive_queue[1].sn, 3L)
+  assert_eq(malformed.receive_queue[2].sn, 4L)
+  assert_eq(malformed.receive_queue_segments, 5)
+  assert_eq(malformed.receive_queue_bytes, 5)
+  assert_eq(malformed.recv(), Some([10, 11]))
+  assert_eq(malformed.receive_queue.length(), 3)
+  assert_eq(malformed.receive_queue_segments, 3)
+  assert_eq(malformed.receive_queue_bytes, 3)
+}
+
+///|
 test "input orders and reassembles fragments while rejecting duplicates" {
   let control = state_test_control(42L, kcp_default_config())
   let later = state_test_datagram([

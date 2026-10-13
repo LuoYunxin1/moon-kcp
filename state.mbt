@@ -524,22 +524,6 @@ fn kcp_int_max(left : Int, right : Int) -> Int {
 }
 
 ///|
-fn kcp_remove_segment_at(
-  segments : Array[KcpSegment],
-  index : Int,
-) -> Array[KcpSegment] {
-  let remaining : Array[KcpSegment] = []
-  let mut cursor = 0
-  while cursor < segments.length() {
-    if cursor != index {
-      remaining.push(segments[cursor])
-    }
-    cursor += 1
-  }
-  remaining
-}
-
-///|
 fn KcpControl::kcp_control_update_snd_una(self : Self) -> Unit {
   if self.send_buffer.length() == 0 {
     self.snd_una = self.snd_nxt
@@ -728,16 +712,25 @@ fn KcpControl::kcp_control_insert_receive_segment(
 
 ///|
 fn KcpControl::kcp_control_move_contiguous_receive(self : Self) -> Unit {
-  while self.receive_buffer.length() > 0 &&
-        self.receive_buffer[0].sn == self.rcv_nxt &&
+  let mut consumed = 0
+  while consumed < self.receive_buffer.length() &&
+        self.receive_buffer[consumed].sn == self.rcv_nxt &&
         self.receive_queue_segments < self.config.receive_window {
-    let segment = self.receive_buffer[0]
-    self.receive_buffer = kcp_remove_segment_at(self.receive_buffer, 0)
+    let segment = self.receive_buffer[consumed]
     self.receive_buffer_bytes -= segment.data.length()
     self.receive_queue_bytes += segment.data.length()
     self.receive_queue_segments += 1
     self.receive_queue.push(segment)
     self.rcv_nxt = kcp_seq_add(self.rcv_nxt, 1L)
+    consumed += 1
+  }
+  if consumed > 0 {
+    let remaining : Array[KcpSegment] = []
+    while consumed < self.receive_buffer.length() {
+      remaining.push(self.receive_buffer[consumed])
+      consumed += 1
+    }
+    self.receive_buffer = remaining
   }
 }
 
@@ -745,58 +738,68 @@ fn KcpControl::kcp_control_move_contiguous_receive(self : Self) -> Unit {
 fn KcpControl::kcp_control_reassemble(
   self : Self,
 ) -> Result[Unit, KcpStateError] {
-  while self.receive_queue.length() > 0 {
-    let first = self.receive_queue[0]
+  let mut consumed = 0
+  let mut done = false
+  let mut result : Result[Unit, KcpStateError] = Ok(())
+  while consumed < self.receive_queue.length() && !done {
+    let first = self.receive_queue[consumed]
     let required = first.frg + 1
-    if self.receive_queue.length() < required {
-      return Ok(())
-    }
-    let mut valid_chain = true
-    let mut index = 0
-    while index < required {
-      if self.receive_queue[index].frg != first.frg - index {
-        valid_chain = false
+    if self.receive_queue.length() - consumed < required {
+      done = true
+    } else {
+      let mut valid_chain = true
+      let mut index = 0
+      while index < required {
+        if self.receive_queue[consumed + index].frg != first.frg - index {
+          valid_chain = false
+        }
+        index += 1
       }
-      index += 1
-    }
-    if !valid_chain {
-      return Err(InvalidFragmentChain)
-    }
-    let mut size = 0
-    index = 0
-    while index < required {
-      size += self.receive_queue[index].data.length()
-      index += 1
-    }
-    if size > self.config.max_message_size {
-      return Err(MessageTooLarge(size))
-    }
-    if size > self.config.max_queued_bytes {
-      return Err(
-        QueueLimitExceeded(
-          self.receive_queue_bytes,
-          self.config.max_queued_bytes,
-        ),
-      )
-    }
-    let message : Array[Int] = []
-    index = 0
-    while index < required {
-      for byte in self.receive_queue[index].data {
-        message.push(byte)
+      if !valid_chain {
+        result = Err(InvalidFragmentChain)
+        done = true
+      } else {
+        let mut size = 0
+        index = 0
+        while index < required {
+          size += self.receive_queue[consumed + index].data.length()
+          index += 1
+        }
+        if size > self.config.max_message_size {
+          result = Err(MessageTooLarge(size))
+          done = true
+        } else if size > self.config.max_queued_bytes {
+          result = Err(
+            QueueLimitExceeded(
+              self.receive_queue_bytes,
+              self.config.max_queued_bytes,
+            ),
+          )
+          done = true
+        } else {
+          let message : Array[Int] = []
+          index = 0
+          while index < required {
+            for byte in self.receive_queue[consumed + index].data {
+              message.push(byte)
+            }
+            index += 1
+          }
+          self.receive_messages.push({ data: message, segments: required, })
+          consumed += required
+        }
       }
-      index += 1
     }
-    self.receive_messages.push({ data: message, segments: required, })
+  }
+  if consumed > 0 {
     let remaining : Array[KcpSegment] = []
-    index = required
-    while index < self.receive_queue.length() {
-      remaining.push(self.receive_queue[index])
-      index += 1
+    while consumed < self.receive_queue.length() {
+      remaining.push(self.receive_queue[consumed])
+      consumed += 1
     }
     self.receive_queue = remaining
   }
-  Ok(())
+  result
 }
 
 ///|
@@ -1079,11 +1082,11 @@ pub fn KcpControl::flush(
   if !self.config.no_congestion_control {
     send_limit = kcp_int_min(send_limit, self.congestion_window)
   }
-  while self.send_queue.length() > 0 &&
+  let mut queued_cursor = 0
+  while queued_cursor < self.send_queue.length() &&
         kcp_sequence_distance(self.snd_una, self.snd_nxt) <
         send_limit.to_int64() {
-    let queued = self.send_queue[0]
-    self.send_queue = kcp_remove_segment_at(self.send_queue, 0)
+    let queued = self.send_queue[queued_cursor]
     let segment : KcpSegment = {
       conv: queued.conv,
       cmd: queued.cmd,
@@ -1105,6 +1108,15 @@ pub fn KcpControl::flush(
       fast_ack: 0,
       transmissions: 0,
     })
+    queued_cursor += 1
+  }
+  if queued_cursor > 0 {
+    let remaining : Array[KcpSegment] = []
+    while queued_cursor < self.send_queue.length() {
+      remaining.push(self.send_queue[queued_cursor])
+      queued_cursor += 1
+    }
+    self.send_queue = remaining
   }
   self.kcp_control_update_snd_una()
 
