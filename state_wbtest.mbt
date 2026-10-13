@@ -1,0 +1,473 @@
+///|
+fn state_test_control(conv : Int64, config : KcpConfig) -> KcpControl {
+  new_kcp_control(conv, config).unwrap()
+}
+
+///|
+fn state_test_encode(segment : KcpSegment) -> Array[Int] {
+  kcp_encode_segment(segment).unwrap()
+}
+
+///|
+fn state_test_datagram(segments : Array[KcpSegment]) -> Array[Int] {
+  let bytes : Array[Int] = []
+  for segment in segments {
+    for byte in state_test_encode(segment) {
+      bytes.push(byte)
+    }
+  }
+  bytes
+}
+
+///|
+fn state_test_segment(
+  conv : Int64,
+  cmd : KcpCommand,
+  sn : Int64,
+  una : Int64,
+  wnd : Int,
+  ts : Int64,
+  frg : Int,
+  data : Array[Int],
+) -> KcpSegment {
+  { conv, cmd, sn, una, wnd, ts, frg, data, }
+}
+
+///|
+fn state_test_take_datagrams(
+  result : Result[Array[Array[Int]], KcpStateError],
+) -> Array[Array[Int]] {
+  result.unwrap()
+}
+
+///|
+fn state_test_input(control : KcpControl, bytes : Array[Int]) -> KcpInputReport {
+  control.input(bytes).unwrap()
+}
+
+///|
+test "input orders and reassembles fragments while rejecting duplicates" {
+  let control = state_test_control(42L, kcp_default_config())
+  let later = state_test_datagram([
+    state_test_segment(42L, Push, 1L, 0L, 128, 10L, 0, [2]),
+  ])
+  let first_report = state_test_input(control, later)
+  assert_eq(first_report.accepted_payload_bytes, 1)
+  assert_eq(control.next_receive_sequence(), 0L)
+  assert_true(control.recv() is None)
+
+  let first = state_test_datagram([
+    state_test_segment(42L, Push, 0L, 0L, 128, 11L, 1, [1]),
+  ])
+  let second_report = state_test_input(control, first)
+  assert_eq(second_report.accepted_payload_bytes, 1)
+  assert_eq(control.next_receive_sequence(), 2L)
+  assert_eq(control.recv(), Some([1, 2]))
+
+  let duplicate_report = state_test_input(control, later)
+  assert_eq(duplicate_report.accepted_payload_bytes, 0)
+  assert_eq(control.stats().received_payload_bytes, 2)
+  assert_eq(control.stats().out_of_window_segments, 0)
+}
+
+///|
+test "ACK and UNA release flight state and sample RTT across a wrap-safe clock" {
+  let config = kcp_default_config()
+  config.set_no_congestion_control(true)
+  config.set_interval(10)
+  let sender = state_test_control(7L, config)
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  let outgoing = state_test_take_datagrams(sender.update(100L))
+  assert_eq(outgoing.length(), 1)
+  assert_eq(sender.waitsnd_segments(), 2)
+  ignore(state_test_take_datagrams(sender.update(120L)))
+
+  let ack = state_test_datagram([
+    state_test_segment(7L, Ack, 0L, 2L, 128, 100L, 0, []),
+  ])
+  let report = state_test_input(sender, ack)
+  assert_eq(report.acknowledgements, 1)
+  assert_eq(sender.next_send_sequence(), 2L)
+  assert_eq(sender.snd_una, 2L)
+  assert_eq(sender.waitsnd_segments(), 0)
+  assert_eq(sender.smoothed_rtt, 20)
+  assert_eq(sender.stats().duplicate_acks, 0)
+}
+
+///|
+test "timeout retransmission backs off and check points at the deadline" {
+  let config = kcp_default_config()
+  config.set_interval(100)
+  config.set_rto_limits(10, 20, 80)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(8L, config)
+  ignore(sender.send([9]))
+  let initial = state_test_take_datagrams(sender.update(100L))
+  assert_eq(initial.length(), 1)
+  assert_eq(sender.send_buffer[0].resend_at, 122L)
+  assert_eq(sender.check(121L), Ok(122L))
+  assert_eq(state_test_take_datagrams(sender.update(121L)).length(), 0)
+  let retransmission = state_test_take_datagrams(sender.update(122L))
+  assert_eq(retransmission.length(), 1)
+  assert_eq(sender.stats().retransmissions, 1)
+  assert_eq(sender.stats().timeout_retransmissions, 1)
+  assert_eq(sender.send_buffer[0].resend_timeout, 40)
+  assert_eq(sender.send_buffer[0].resend_at, 162L)
+}
+
+///|
+test "later ACKs trigger fast retransmit for missing earlier segments" {
+  let config = kcp_default_config()
+  config.set_interval(10)
+  config.set_windows(8, 128)
+  config.set_fast_resend(1)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(9L, config)
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  let initial = state_test_take_datagrams(sender.update(100L))
+  assert_eq(initial.length(), 1)
+  assert_eq(sender.waitsnd_segments(), 3)
+  let later_ack = state_test_datagram([
+    state_test_segment(9L, Ack, 2L, 0L, 128, 100L, 0, []),
+  ])
+  ignore(state_test_input(sender, later_ack))
+  assert_eq(sender.send_buffer[0].fast_ack, 1)
+  let retransmissions = state_test_take_datagrams(sender.update(110L))
+  assert_eq(retransmissions.length(), 1)
+  assert_eq(sender.stats().fast_retransmissions, 2)
+  assert_eq(sender.stats().timeout_retransmissions, 0)
+}
+
+///|
+test "window probe and window-tell commands are caller driven" {
+  let config = kcp_default_config()
+  config.set_interval(10)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(10L, config)
+  let closed = state_test_datagram([
+    state_test_segment(10L, WindowTell, 0L, 0L, 0, 0L, 0, []),
+  ])
+  ignore(state_test_input(sender, closed))
+  ignore(sender.send([5]))
+  assert_eq(state_test_take_datagrams(sender.update(100L)).length(), 0)
+  let probe = state_test_take_datagrams(sender.update(7100L))
+  assert_eq(probe.length(), 1)
+  let decoded_probe = match kcp_decode_datagram(probe[0]) {
+    Ok(segments) => segments
+    Err(_) => fail("probe output must be a valid KCP datagram")
+  }
+  assert_eq(decoded_probe[0].cmd, WindowAsk)
+
+  let receiver = state_test_control(10L, kcp_default_config())
+  let ask = state_test_datagram([
+    state_test_segment(10L, WindowAsk, 0L, 0L, 1, 0L, 0, []),
+  ])
+  ignore(state_test_input(receiver, ask))
+  let tell = state_test_take_datagrams(receiver.update(0L))
+  assert_eq(tell.length(), 1)
+  let decoded_tell = match kcp_decode_datagram(tell[0]) {
+    Ok(segments) => segments
+    Err(_) => fail("window tell must be a valid KCP datagram")
+  }
+  assert_eq(decoded_tell[0].cmd, WindowTell)
+  assert_eq(decoded_tell[0].wnd, 128)
+}
+
+///|
+test "sequence and timer serial arithmetic survives the u32 boundary" {
+  let config = kcp_default_config()
+  config.set_interval(10)
+  config.set_rto_limits(10, 20, 80)
+  config.set_no_congestion_control(true)
+  let control = state_test_control(11L, config)
+  ignore(control.send([1]))
+  let first = state_test_take_datagrams(control.update(0xFFFFFFF0L))
+  let first_segment = match kcp_decode_datagram(first[0]) {
+    Ok(segments) => segments[0]
+    Err(_) => fail("initial packet must decode")
+  }
+  assert_eq(first_segment.ts, 0xFFFFFFF0L)
+  assert_eq(control.check(0xFFFFFFF0L), Ok(0xFFFFFFFAL))
+  assert_eq(state_test_take_datagrams(control.update(0xFFFFFFFAL)).length(), 0)
+  assert_eq(control.check(0xFFFFFFFAL), Ok(4L))
+  assert_eq(state_test_take_datagrams(control.update(4L)).length(), 0)
+  assert_eq(control.check(4L), Ok(6L))
+  let retransmission = state_test_take_datagrams(control.update(6L))
+  assert_eq(retransmission.length(), 1)
+  assert_eq(control.stats().timeout_retransmissions, 1)
+  assert_true(control.update(5L) is Err(InvalidClock(5L)))
+}
+
+///|
+test "input rejects malformed and foreign datagrams before state mutation" {
+  let control = state_test_control(12L, kcp_default_config())
+  assert_true(
+    control.input([1, 2]) is Err(MalformedDatagram(TruncatedHeader(0, 2))),
+  )
+  let foreign = state_test_datagram([
+    state_test_segment(13L, Push, 0L, 0L, 128, 0L, 0, [8]),
+  ])
+  assert_true(control.input(foreign) is Err(ConversationMismatch(12L, 13L)))
+  assert_eq(control.next_receive_sequence(), 0L)
+  assert_eq(control.pending_messages(), 0)
+  assert_eq(control.stats().malformed_datagrams, 2)
+}
+
+///|
+test "receive window and queued zero-byte segments have finite bounds" {
+  let receive_config = kcp_default_config()
+  receive_config.set_windows(32, 1)
+  receive_config.set_resource_limits(1376, 4 * 1024 * 1024, 32)
+  let receiver = state_test_control(14L, receive_config)
+  let impossible_chain = state_test_datagram([
+    state_test_segment(14L, Push, 0L, 0L, 1, 0L, 1, [1]),
+  ])
+  assert_true(receiver.input(impossible_chain) is Err(ReceiveWindowOverflow))
+  assert_eq(receiver.next_receive_sequence(), 0L)
+
+  let send_config = kcp_default_config()
+  send_config.set_resource_limits(0, 1400, 16)
+  let sender = state_test_control(15L, send_config)
+  assert_eq(sender.send([]), Ok(1))
+  assert_true(sender.send([]) is Err(QueueSegmentLimitExceeded(1, 1)))
+}
+
+///|
+test "flush respects MTU and per-datagram segment caps" {
+  let config = kcp_default_config()
+  config.set_mtu(96)
+  config.set_windows(8, 128)
+  config.set_resource_limits(1024, 4096, 2)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(16L, config)
+  ignore(sender.send(Array::make(90, 7)))
+  let datagrams = state_test_take_datagrams(sender.update(100L))
+  assert_eq(datagrams.length(), 2)
+  for datagram in datagrams {
+    assert_true(datagram.length() <= 96)
+    let segments = match kcp_decode_datagram(datagram) {
+      Ok(decoded) => decoded
+      Err(_) => fail("output must decode as a KCP datagram")
+    }
+    assert_true(segments.length() <= 2)
+  }
+  assert_eq(sender.stats().sent_segments, 2)
+  assert_eq(sender.stats().sent_payload_bytes, 90)
+}
+
+///|
+test "reliable message round trip releases send and receive storage" {
+  let sender = state_test_control(17L, kcp_default_config())
+  let receiver = state_test_control(17L, kcp_default_config())
+  ignore(sender.send([10, 20, 30]))
+  let outgoing = state_test_take_datagrams(sender.update(1000L))
+  assert_eq(outgoing.length(), 1)
+  let report = state_test_input(receiver, outgoing[0])
+  assert_eq(report.accepted_payload_bytes, 3)
+  let acks = state_test_take_datagrams(receiver.update(1000L))
+  assert_eq(acks.length(), 1)
+  ignore(sender.update(1020L))
+  let ack_report = state_test_input(sender, acks[0])
+  assert_eq(ack_report.acknowledgements, 1)
+  assert_eq(sender.waitsnd_segments(), 0)
+  assert_eq(sender.smoothed_rtt, 20)
+  assert_eq(receiver.recv(), Some([10, 20, 30]))
+  assert_eq(receiver.stats().delivered_messages, 1)
+}
+
+///|
+test "stream mode coalesces only the unsent tail and preserves byte order" {
+  let config = kcp_default_config()
+  config.set_mtu(48)
+  config.set_resource_limits(4096, 8192, 32)
+  config.set_stream_mode(true)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(18L, config)
+  let receiver = state_test_control(18L, kcp_default_config())
+  assert_eq(
+    sender.send([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]),
+    Ok(1),
+  )
+  assert_eq(sender.send([21, 22, 23, 24, 25, 26, 27, 28, 29, 30]), Ok(1))
+  assert_eq(sender.waitsnd_segments(), 2)
+  assert_eq(sender.send_queue[0].data, [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+    23, 24,
+  ])
+  assert_eq(sender.send_queue[1].data, [25, 26, 27, 28, 29, 30])
+  assert_eq(sender.send_queue[0].frg, 0)
+  assert_eq(sender.send_queue[1].frg, 0)
+
+  let output = state_test_take_datagrams(sender.update(100L))
+  assert_eq(output.length(), 2)
+  let mut received_segments = 0
+  for datagram in output {
+    assert_true(datagram.length() <= 48)
+    let decoded = match kcp_decode_datagram(datagram) {
+      Ok(segments) => segments
+      Err(_) => fail("stream output must decode")
+    }
+    assert_eq(decoded.length(), 1)
+    assert_eq(decoded[0].frg, 0)
+    ignore(state_test_input(receiver, datagram))
+    received_segments += decoded.length()
+  }
+  assert_eq(received_segments, 2)
+  // Reads follow transport segment boundaries, not the two application writes.
+  assert_eq(
+    receiver.recv(),
+    Some([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      22, 23, 24,
+    ]),
+  )
+  assert_eq(receiver.recv(), Some([25, 26, 27, 28, 29, 30]))
+  assert_true(receiver.recv() is None)
+}
+
+///|
+test "fast acknowledgement uses the sequence and timestamp conservative pair" {
+  let config = kcp_default_config()
+  config.set_windows(8, 128)
+  config.set_fast_resend(1)
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(27L, config)
+  ignore(sender.send([0]))
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  ignore(state_test_take_datagrams(sender.update(100L)))
+
+  let reordered_timestamps = state_test_datagram([
+    state_test_segment(27L, Ack, 2L, 0L, 128, 110L, 0, []),
+    state_test_segment(27L, Ack, 3L, 0L, 128, 90L, 0, []),
+  ])
+  ignore(state_test_input(sender, reordered_timestamps))
+  assert_eq(sender.send_buffer[0].fast_ack, 1)
+  assert_eq(sender.send_buffer[1].fast_ack, 1)
+  assert_eq(sender.send_buffer.length(), 2)
+}
+
+///|
+test "timeout congestion threshold derives from the congestion window" {
+  let config = kcp_default_config()
+  config.set_windows(32, 128)
+  let sender = state_test_control(28L, config)
+  sender.congestion_window = 10
+  sender.slow_start_threshold = 8
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(sender.send([3]))
+  ignore(state_test_take_datagrams(sender.update(100L)))
+  ignore(state_test_take_datagrams(sender.update(325L)))
+  assert_eq(sender.slow_start_threshold, 5)
+  assert_eq(sender.congestion_window, 1)
+}
+
+///|
+test "stream queue caps segment metadata independently from payload bytes" {
+  let config = kcp_default_config()
+  config.set_mtu(25)
+  config.set_windows(1, 1)
+  config.set_stream_mode(true)
+  config.set_resource_limits(65536, 64 * 1024 * 1024, 255)
+  let sender = state_test_control(29L, config)
+  assert_true(
+    sender.send(Array::make(65536, 7))
+    is Err(QueueSegmentLimitExceeded(0, 65535)),
+  )
+}
+
+///|
+test "congestion byte arithmetic remains wide for large MSS and windows" {
+  let config = kcp_default_config()
+  config.set_mtu(65507)
+  config.set_windows(65535, 65535)
+  let sender = state_test_control(30L, config)
+  sender.remote_window = 65535
+  sender.congestion_window = 40000
+  sender.slow_start_threshold = 1
+  sender.congestion_increment = 40000L * kcp_config_mss(config).to_int64()
+  sender.snd_una = 1L
+  sender.kcp_control_adjust_congestion(0L)
+  assert_true(sender.congestion_increment > 0L)
+  assert_eq(sender.congestion_window, 40000)
+}
+
+///|
+test "constructor and caller-supplied clocks reject values outside serial range" {
+  assert_true(
+    new_kcp_control(-1L, kcp_default_config()) is Err(InvalidConversation(-1L)),
+  )
+  assert_true(
+    new_kcp_control(0x100000000L, kcp_default_config())
+    is Err(InvalidConversation(0x100000000L)),
+  )
+  let invalid = kcp_default_config()
+  invalid.set_interval(9)
+  assert_true(new_kcp_control(1L, invalid) is Err(InvalidConfiguration))
+
+  let control = state_test_control(1L, kcp_default_config())
+  assert_true(control.update(-1L) is Err(InvalidClock(-1L)))
+  assert_true(control.update(0x100000000L) is Err(InvalidClock(0x100000000L)))
+  assert_eq(control.update(100L), Ok([]))
+  assert_true(control.update(99L) is Err(InvalidClock(99L)))
+  assert_true(control.check(99L) is Err(InvalidClock(99L)))
+}
+
+///|
+test "send rejects oversized or invalid payload without mutating queued state" {
+  let config = kcp_default_config()
+  config.set_resource_limits(4, 1400, 32)
+  let control = state_test_control(2L, config)
+  assert_true(control.send([1, 2, 3, 4, 5]) is Err(MessageTooLarge(5)))
+  assert_true(control.send([1, 256]) is Err(InvalidPayloadByte(1, 256)))
+  assert_eq(control.waitsnd_bytes(), 0)
+  assert_eq(control.waitsnd_segments(), 0)
+
+  assert_eq(control.send([1, 2, 3]), Ok(1))
+  assert_true(control.send([4, 5]) is Err(QueueSegmentLimitExceeded(1, 1)))
+  assert_eq(control.waitsnd_bytes(), 3)
+  assert_eq(control.waitsnd_segments(), 1)
+}
+
+///|
+test "reading a full receive window advertises reopened capacity" {
+  let config = kcp_default_config()
+  config.set_windows(1, 1)
+  config.set_resource_limits(1376, 1400, 32)
+  let receiver = state_test_control(3L, config)
+  let incoming = state_test_datagram([
+    state_test_segment(3L, Push, 0L, 0L, 1, 1L, 0, [41]),
+  ])
+  ignore(state_test_input(receiver, incoming))
+  assert_eq(receiver.stats().out_of_window_segments, 0)
+  assert_eq(receiver.kcp_control_receive_window(), 0)
+  assert_eq(receiver.recv(), Some([41]))
+  assert_eq(receiver.kcp_control_receive_window(), 1)
+
+  let response = state_test_take_datagrams(receiver.update(0L))
+  assert_eq(response.length(), 1)
+  let decoded = match kcp_decode_datagram(response[0]) {
+    Ok(segments) => segments
+    Err(_) => fail("window update must be a valid KCP datagram")
+  }
+  assert_eq(decoded.length(), 2)
+  assert_eq(decoded[1].cmd, WindowTell)
+  assert_eq(decoded[1].wnd, 1)
+}
+
+///|
+test "malformed input increments diagnostics without accepting a datagram" {
+  let receiver = state_test_control(4L, kcp_default_config())
+  assert_true(receiver.input([1, 2, 3]) is Err(_))
+  assert_eq(receiver.stats().received_datagrams, 0)
+  assert_eq(receiver.stats().malformed_datagrams, 1)
+  assert_eq(receiver.stats().received_segments, 0)
+  assert_eq(receiver.next_receive_sequence(), 0L)
+}

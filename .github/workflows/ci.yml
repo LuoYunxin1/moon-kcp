@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [wasm-gc, wasm, js, native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MoonBit
+        uses: moonbitlang/setup-moonbit@v1
+      - name: Show toolchain
+        run: moon version --all
+      - name: Check formatting
+        run: moon fmt --check
+      - name: Verify generated interfaces
+        run: |
+          moon info
+          git diff --exit-code -- '**/*.mbti' '**/pkg.generated.mbti'
+      - name: Build library and examples
+        run: |
+          moon build --target ${{ matrix.target }} --deny-warn
+          moon build examples/codec --target ${{ matrix.target }} --deny-warn
+          moon build examples/loopback --target ${{ matrix.target }} --deny-warn
+          moon build examples/retransmission --target ${{ matrix.target }} --deny-warn
+      - name: Run tests
+        run: moon test --target ${{ matrix.target }} --deny-warn
+      - name: Run examples
+        if: matrix.target == 'wasm-gc'
+        run: |
+          moon run examples/codec
+          moon run examples/loopback
+          moon run examples/retransmission

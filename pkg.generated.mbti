@@ -1,0 +1,152 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "LuoYunxin1/moon-kcp"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn kcp_config_accepts_message(KcpConfig, Int) -> Bool
+
+pub fn kcp_config_is_valid(KcpConfig) -> Bool
+
+pub fn kcp_config_max_fragments(KcpConfig) -> Int
+
+pub fn kcp_config_mss(KcpConfig) -> Int
+
+pub fn kcp_decode_datagram(Array[Int]) -> Result[Array[KcpSegment], KcpError]
+
+pub fn kcp_default_config() -> KcpConfig
+
+pub fn kcp_encode_segment(KcpSegment) -> Result[Array[Int], KcpError]
+
+pub fn kcp_seq_add(Int64, Int64) -> Int64
+
+pub fn kcp_seq_less(Int64, Int64) -> Bool
+
+pub fn new_kcp_control(Int64, KcpConfig) -> Result[KcpControl, KcpStateError]
+
+// Errors
+
+// Types and methods
+pub(all) enum KcpCommand {
+  Push
+  Ack
+  WindowAsk
+  WindowTell
+} derive(Eq, @debug.Debug)
+pub fn KcpCommand::equal(Self, Self) -> Bool
+pub fn KcpCommand::not_equal(Self, Self) -> Bool
+pub fn KcpCommand::to_repr(Self) -> @debug.Repr
+
+pub struct KcpConfig {
+  mut mtu : Int
+  mut send_window : Int
+  mut receive_window : Int
+  mut interval_ms : Int
+  mut fast_resend : Int
+  mut no_congestion_control : Bool
+  mut stream_mode : Bool
+  mut initial_rto_ms : Int
+  mut minimum_rto_ms : Int
+  mut maximum_rto_ms : Int
+  mut max_message_size : Int
+  mut max_queued_bytes : Int
+  mut max_segments_per_datagram : Int
+}
+pub fn KcpConfig::set_fast_resend(Self, Int) -> Unit
+pub fn KcpConfig::set_interval(Self, Int) -> Unit
+pub fn KcpConfig::set_mtu(Self, Int) -> Unit
+pub fn KcpConfig::set_no_congestion_control(Self, Bool) -> Unit
+pub fn KcpConfig::set_resource_limits(Self, Int, Int, Int) -> Unit
+pub fn KcpConfig::set_rto_limits(Self, Int, Int, Int) -> Unit
+pub fn KcpConfig::set_stream_mode(Self, Bool) -> Unit
+pub fn KcpConfig::set_windows(Self, Int, Int) -> Unit
+
+pub struct KcpControl {
+  // private fields
+}
+pub fn KcpControl::check(Self, Int64) -> Result[Int64, KcpStateError]
+pub fn KcpControl::conversation(Self) -> Int64
+pub fn KcpControl::flush(Self) -> Result[Array[Array[Int]], KcpStateError]
+pub fn KcpControl::input(Self, Array[Int]) -> Result[KcpInputReport, KcpStateError]
+pub fn KcpControl::maximum_segment_payload(Self) -> Int
+pub fn KcpControl::next_receive_sequence(Self) -> Int64
+pub fn KcpControl::next_send_sequence(Self) -> Int64
+pub fn KcpControl::pending_messages(Self) -> Int
+pub fn KcpControl::recv(Self) -> Array[Int]?
+pub fn KcpControl::send(Self, Array[Int]) -> Result[Int, KcpStateError]
+pub fn KcpControl::stats(Self) -> KcpStats
+pub fn KcpControl::update(Self, Int64) -> Result[Array[Array[Int]], KcpStateError]
+pub fn KcpControl::waitsnd_bytes(Self) -> Int
+pub fn KcpControl::waitsnd_segments(Self) -> Int
+
+pub enum KcpError {
+  InvalidU32Field(String, Int64)
+  InvalidU8Field(String, Int)
+  InvalidU16Field(String, Int)
+  InvalidByte(Int, Int)
+  UnknownCommand(Int, Int)
+  TruncatedHeader(Int, Int)
+  TruncatedPayload(Int, Int64, Int)
+  PayloadTooLarge(Int)
+} derive(Eq, @debug.Debug)
+pub fn KcpError::equal(Self, Self) -> Bool
+pub fn KcpError::not_equal(Self, Self) -> Bool
+pub fn KcpError::to_repr(Self) -> @debug.Repr
+
+pub struct KcpInputReport {
+  segment_count : Int
+  acknowledgements : Int
+  pushed_segments : Int
+  accepted_payload_bytes : Int
+  ignored_out_of_window : Int
+}
+
+pub(all) struct KcpSegment {
+  conv : Int64
+  cmd : KcpCommand
+  frg : Int
+  wnd : Int
+  ts : Int64
+  sn : Int64
+  una : Int64
+  data : Array[Int]
+}
+
+pub enum KcpStateError {
+  InvalidConfiguration
+  InvalidConversation(Int64)
+  ConversationMismatch(Int64, Int64)
+  MalformedDatagram(KcpError)
+  UnsupportedCommand(KcpCommand)
+  MessageTooLarge(Int)
+  InvalidPayloadByte(Int, Int)
+  QueueLimitExceeded(Int, Int)
+  QueueSegmentLimitExceeded(Int, Int)
+  InvalidClock(Int64)
+  ReceiveWindowOverflow
+} derive(Eq, @debug.Debug)
+pub fn KcpStateError::equal(Self, Self) -> Bool
+pub fn KcpStateError::not_equal(Self, Self) -> Bool
+pub fn KcpStateError::to_repr(Self) -> @debug.Repr
+
+pub struct KcpStats {
+  sent_datagrams : Int
+  sent_segments : Int
+  sent_payload_bytes : Int
+  received_datagrams : Int
+  received_segments : Int
+  received_payload_bytes : Int
+  delivered_messages : Int
+  retransmissions : Int
+  fast_retransmissions : Int
+  timeout_retransmissions : Int
+  duplicate_acks : Int
+  out_of_window_segments : Int
+  malformed_datagrams : Int
+}
+
+// Type aliases
+
+// Traits

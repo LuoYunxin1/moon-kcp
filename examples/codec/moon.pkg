@@ -1,0 +1,5 @@
+pkgtype(kind: "executable")
+
+import {
+  "LuoYunxin1/moon-kcp" @kcp,
+}
