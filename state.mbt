@@ -11,6 +11,7 @@ pub enum KcpStateError {
   QueueLimitExceeded(Int, Int)
   QueueSegmentLimitExceeded(Int, Int)
   InvalidClock(Int64)
+  InvalidFragmentChain
   ReceiveWindowOverflow
 } derive(Eq, Debug)
 
@@ -759,7 +760,7 @@ fn KcpControl::kcp_control_reassemble(
       index += 1
     }
     if !valid_chain {
-      return Err(ReceiveWindowOverflow)
+      return Err(InvalidFragmentChain)
     }
     let mut size = 0
     index = 0
@@ -927,6 +928,10 @@ pub fn KcpControl::input(
             self.kcp_control_move_contiguous_receive()
             match self.kcp_control_reassemble() {
               Ok(_) => ()
+              Err(InvalidFragmentChain) => {
+                self.malformed_datagrams += 1
+                return Err(InvalidFragmentChain)
+              }
               Err(error) => return Err(error)
             }
           }

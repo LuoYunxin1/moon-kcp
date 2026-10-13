@@ -18,7 +18,7 @@ A KCP segment has a 24-byte little-endian header: conversation id (u32), command
 
 Wire framing, conversation IDs, and command values are checked across the decoded datagram before sequence-dependent state processing begins. After that preflight, segments are processed in wire order. A PUSH outside the receive window is ignored, while an already-received PUSH is acknowledged; both decisions precede fragment-chain validation. An eligible PUSH that violates the fragment or queue limit returns a structured error.
 
-This is not a transactional API: if an eligible segment fails after earlier segments in the same datagram have been processed, those earlier ACK, receive, window, and diagnostic effects are not rolled back. Callers should record the error and avoid blindly replaying the whole datagram.
+This is not a transactional API: if an eligible segment fails after earlier segments in the same datagram have been processed, those earlier ACK, receive, window, and diagnostic effects are not rolled back. PUSHes already accepted before a complete fragment chain is checked also retain their pending ACKs and receive-sequence advancement if that chain is inconsistent; no message is delivered for that invalid chain. `ReceiveWindowOverflow` is reserved for an individual PUSH whose `frg + 1` exceeds the configured receive window. Once enough eligible fragments are present to confirm that their `frg` values do not descend to zero, `input` instead returns `InvalidFragmentChain` and counts the datagram as malformed. Callers should record the error and avoid blindly replaying the whole datagram.
 
 ## Explicitly outside scope
 

@@ -46,7 +46,7 @@ The host sends each returned datagram through its chosen network API and passes 
 - `new_kcp_control(conv, config)` validates and copies configuration.
 - `send(message)` copies and fragments a bounded application message.
 - `update(now_ms)` advances the u32 KCP clock and returns due output datagrams.
-- `input(datagram)` validates framing, conversation IDs, and command values before changing transport state, then processes segments in wire order. A semantic error on an eligible PUSH can occur after earlier segments have already changed state; errors are not transaction rollbacks, so do not blindly replay a rejected datagram.
+- `input(datagram)` validates framing, conversation IDs, and command values before changing transport state, then processes segments in wire order. `ReceiveWindowOverflow` means a PUSH's `frg + 1` exceeds the receive window; a confirmed non-descending fragment chain returns `InvalidFragmentChain`. These errors are not transaction rollbacks: ACK and receive-sequence effects already applied remain, so do not blindly replay a rejected datagram. See [`docs/protocol-boundary.md`](docs/protocol-boundary.md) for details.
 - `peek_message_size()` reports the oldest complete message length without consuming it; `recv()` then removes that message.
 - `check(now_ms)` reports the next caller update time; no timer is started internally.
 - `flush()` emits pending ACKs, probes, new sends, and due retransmissions.

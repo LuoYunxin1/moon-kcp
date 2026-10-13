@@ -340,6 +340,40 @@ test "receive window and queued zero-byte segments have finite bounds" {
 }
 
 ///|
+test "complete in-window fragment mismatch is distinct and keeps wire effects" {
+  let config = kcp_default_config()
+  config.set_windows(4, 4)
+  config.set_resource_limits(4 * 1376, 4 * 1024 * 1024, 32)
+  let control = state_test_control(16L, config)
+  ignore(control.send([9]))
+  ignore(state_test_take_datagrams(control.update(100L)))
+
+  // Every fragment count fits the receive window, but [2, 2, 0] cannot be
+  // the descending chain [2, 1, 0] claimed by its first segment.
+  let broken_chain = state_test_datagram([
+    state_test_segment(16L, Ack, 0L, 0L, 4, 100L, 0, []),
+    state_test_segment(16L, Push, 0L, 0L, 4, 10L, 2, [1]),
+    state_test_segment(16L, Push, 1L, 0L, 4, 11L, 2, [2]),
+    state_test_segment(16L, Push, 2L, 0L, 4, 12L, 0, [3]),
+  ])
+  assert_true(control.input(broken_chain) is Err(InvalidFragmentChain))
+
+  // The ACK and each eligible PUSH were processed before chain validation
+  // completed; the error does not roll back sequence or pending-ACK effects.
+  assert_eq(control.waitsnd_segments(), 0)
+  assert_eq(control.next_receive_sequence(), 3L)
+  assert_eq(control.pending_messages(), 0)
+  assert_eq(control.pending_acks.length(), 3)
+  assert_eq(control.pending_acks[0].sn, 0L)
+  assert_eq(control.pending_acks[1].sn, 1L)
+  assert_eq(control.pending_acks[2].sn, 2L)
+  assert_eq(control.stats().received_datagrams, 1)
+  assert_eq(control.stats().received_segments, 4)
+  assert_eq(control.stats().received_payload_bytes, 3)
+  assert_eq(control.stats().malformed_datagrams, 1)
+}
+
+///|
 test "eligible oversized PUSH follows wire order and later input recovers" {
   let config = kcp_default_config()
   config.set_windows(4, 4)
