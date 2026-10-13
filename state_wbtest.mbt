@@ -562,3 +562,36 @@ test "malformed input increments diagnostics without accepting a datagram" {
   assert_eq(receiver.stats().received_segments, 0)
   assert_eq(receiver.next_receive_sequence(), 0L)
 }
+
+///|
+test "queued byte budget stays occupied in flight and releases after acknowledgment" {
+  let config = kcp_default_config()
+  config.set_resource_limits(1400, 1400, 8)
+  let sender = state_test_control(34L, config)
+  let large = Array::make(1376, 7)
+  assert_eq(sender.send(large), Ok(1))
+  assert_true(
+    sender.send(Array::make(25, 8)) is Err(QueueLimitExceeded(1376, 1400)),
+  )
+  assert_eq(sender.waitsnd_bytes(), 1376)
+  assert_eq(sender.waitsnd_segments(), 1)
+
+  let initial = state_test_take_datagrams(sender.update(0L))
+  assert_eq(initial.length(), 1)
+  assert_eq(sender.send_queue_bytes, 0)
+  assert_eq(sender.send_buffer_bytes, 1376)
+  assert_true(
+    sender.send(Array::make(25, 8)) is Err(QueueLimitExceeded(1376, 1400)),
+  )
+
+  let acknowledgement = state_test_datagram([
+    state_test_segment(34L, Ack, 0L, 1L, 128, 0L, 0, []),
+  ])
+  ignore(state_test_input(sender, acknowledgement))
+  assert_eq(sender.waitsnd_bytes(), 0)
+  assert_eq(sender.waitsnd_segments(), 0)
+  assert_eq(sender.send_buffer_bytes, 0)
+  assert_true(sender.send([8]) is Ok(1))
+  assert_eq(sender.waitsnd_bytes(), 1)
+  assert_eq(sender.waitsnd_segments(), 1)
+}
