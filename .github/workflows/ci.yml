@@ -27,6 +27,8 @@ jobs:
         run: |
           moon info
           git diff --exit-code -- '**/*.mbti' '**/pkg.generated.mbti'
+      - name: Check library
+        run: moon check --target ${{ matrix.target }} --deny-warn
       - name: Build library and examples
         run: |
           moon build --target ${{ matrix.target }} --deny-warn
