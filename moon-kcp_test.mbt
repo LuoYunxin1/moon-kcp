@@ -28,7 +28,7 @@ test "public peek reports the next complete message without consuming it" {
 test "control blocks copy configuration, queued payloads, and decoded datagrams" {
   let config = @moon-kcp.kcp_default_config()
   config.set_mtu(100)
-  config.set_resource_limits(9728, 4 * 1024 * 1024, 32)
+  config.set_resource_limits(127 * 76, 4 * 1024 * 1024, 32)
   let configured = @moon-kcp.new_kcp_control(55L, config).unwrap()
   assert_eq(configured.conversation(), 55L)
   assert_eq(configured.maximum_segment_payload(), 76)

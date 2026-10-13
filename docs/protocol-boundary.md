@@ -8,7 +8,7 @@ A KCP segment has a 24-byte little-endian header: conversation id (u32), command
 
 ## State-machine responsibilities
 
-- Assign sequence numbers and fragment messages within the configured message-size/window limits.
+- Assign sequence numbers and fragment messages within the configured message-size/window limits. A single call queues at most 127 new segments, matching the KCP v1 `WND_RCV` send-count ceiling; stream mode applies this after unsent-tail coalescing.
 - Process ACK and UNA information, update RTT/RTO estimates, and release acknowledged send segments.
 - Track receive-window occupancy, queue out-of-order fragments, and release complete messages in sequence order.
 - Schedule timeout and fast retransmission according to KCP v1 behavior.

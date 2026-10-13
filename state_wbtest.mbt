@@ -200,6 +200,27 @@ test "reassembly cursor keeps incomplete and malformed unconsumed suffixes" {
 }
 
 ///|
+test "KCP send ceiling is enforced after stream tail coalescing" {
+  let config = kcp_default_config()
+  config.set_stream_mode(true)
+  config.set_resource_limits(256 * 1024, 4 * 1024 * 1024, 32)
+  let control = state_test_control(96L, config)
+  let mss = kcp_config_mss(config)
+  assert_true(
+    control.send(Array::make(128 * mss, 7)) is Err(TooManySegments(128, 127)),
+  )
+  assert_eq(control.send_queue.length(), 0)
+
+  assert_eq(control.send(Array::make(mss - 1, 3)), Ok(1))
+  let coalesced_call = Array::make(127 * mss + 1, 5)
+  assert_eq(control.send(coalesced_call), Ok(127))
+  assert_eq(control.send_queue.length(), 128)
+  assert_eq(control.send_queue[0].data.length(), mss)
+  assert_eq(control.send_queue[127].data.length(), mss)
+  assert_eq(control.send_queue_bytes, 128 * mss)
+}
+
+///|
 test "input orders and reassembles fragments while rejecting duplicates" {
   let control = state_test_control(42L, kcp_default_config())
   let later = state_test_datagram([
@@ -763,9 +784,14 @@ test "stream queue caps segment metadata independently from payload bytes" {
   config.set_stream_mode(true)
   config.set_resource_limits(65536, 64 * 1024 * 1024, 255)
   let sender = state_test_control(29L, config)
+  let mut accepted_segments = 0
+  while accepted_segments < 65532 {
+    assert_eq(sender.send(Array::make(127, 7)), Ok(127))
+    accepted_segments += 127
+  }
+  assert_eq(accepted_segments, 65532)
   assert_true(
-    sender.send(Array::make(65536, 7))
-    is Err(QueueSegmentLimitExceeded(0, 65535)),
+    sender.send([7, 7, 7, 7]) is Err(QueueSegmentLimitExceeded(65532, 65535)),
   )
 }
 

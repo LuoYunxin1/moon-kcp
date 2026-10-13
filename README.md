@@ -51,7 +51,7 @@ The host sends each returned datagram through its chosen network API and passes 
 - `check(now_ms)` reports the next caller update time; no timer is started internally.
 - `flush()` emits pending ACKs, probes, new sends, and due retransmissions.
 
-See the generated package interface and API doc comments for the exact error and statistics types. Sequence and clock arithmetic use the KCP 32-bit serial space. Configuration bounds MTU, message fragments, queued bytes, receive/send windows, and the number of segments accepted per datagram. Optional stream mode can coalesce bytes into unsent segment space; `send` reports newly allocated segments and can return zero when accepted bytes fit entirely in an unsent tail. It does not preserve `send` call boundaries, so applications should concatenate chunks returned by `recv` when using it.
+See the generated package interface and API doc comments for the exact error and statistics types. Sequence and clock arithmetic use the KCP 32-bit serial space. Configuration bounds MTU, message fragments, queued bytes, receive/send windows, and the number of segments accepted per datagram. A single KCP send is limited to 127 segments, matching the v1 implementation limit; stream writes can coalesce into an unsent tail before that count is checked. Optional stream mode can coalesce bytes into unsent segment space; `send` reports newly allocated segments and can return zero when accepted bytes fit entirely in an unsent tail. It does not preserve `send` call boundaries, so applications should concatenate chunks returned by `recv` when using it.
 
 ## Protocol and scope
 

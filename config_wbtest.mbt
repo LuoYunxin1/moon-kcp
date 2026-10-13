@@ -46,12 +46,16 @@ test "kcp message length checks reject huge and negative values safely" {
 }
 
 ///|
-test "message fragments must fit the receive window while stream chunks may span it" {
+test "send fragment count follows KCP v1 and stream coalescing" {
   let config = kcp_default_config()
-  assert_eq(kcp_config_max_fragments(config), config.receive_window)
+  assert_eq(kcp_config_max_fragments(config), 127)
+  assert_true(kcp_config_accepts_message(config, 127 * kcp_config_mss(config)))
+  assert_false(kcp_config_accepts_message(config, 128 * kcp_config_mss(config)))
+
   config.set_resource_limits(256 * 1024, 4 * 1024 * 1024, 32)
   assert_false(kcp_config_is_valid(config))
   config.set_stream_mode(true)
   assert_true(kcp_config_is_valid(config))
-  assert_true(kcp_config_accepts_message(config, 256 * 1024))
+  assert_false(kcp_config_accepts_message(config, 128 * kcp_config_mss(config)))
+  assert_true(kcp_config_accepts_message(config, 127 * kcp_config_mss(config)))
 }

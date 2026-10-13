@@ -7,6 +7,7 @@ pub enum KcpStateError {
   MalformedDatagram(KcpError)
   UnsupportedCommand(KcpCommand)
   MessageTooLarge(Int)
+  TooManySegments(Int, Int)
   InvalidPayloadByte(Int, Int)
   QueueLimitExceeded(Int, Int)
   QueueSegmentLimitExceeded(Int, Int)
@@ -298,7 +299,7 @@ pub fn KcpControl::send(
   self : Self,
   message : Array[Int],
 ) -> Result[Int, KcpStateError] {
-  if !kcp_config_accepts_message(self.config, message.length()) {
+  if message.length() > self.config.max_message_size {
     return Err(MessageTooLarge(message.length()))
   }
   let mut valid = true
@@ -335,6 +336,9 @@ pub fn KcpControl::send(
     1
   } else {
     (message.length() - 1) / mss + 1
+  }
+  if new_segments > kcp_protocol_max_send_segments {
+    return Err(TooManySegments(new_segments, kcp_protocol_max_send_segments))
   }
   let max_queued_segments = kcp_int_min(
     self.config.max_queued_bytes / mss,

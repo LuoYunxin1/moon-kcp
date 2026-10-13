@@ -122,6 +122,7 @@ pub enum KcpStateError {
   MalformedDatagram(KcpError)
   UnsupportedCommand(KcpCommand)
   MessageTooLarge(Int)
+  TooManySegments(Int, Int)
   InvalidPayloadByte(Int, Int)
   QueueLimitExceeded(Int, Int)
   QueueSegmentLimitExceeded(Int, Int)

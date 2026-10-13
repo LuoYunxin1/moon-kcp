@@ -13,6 +13,10 @@ let kcp_hard_max_queued_bytes : Int = 64 * 1024 * 1024
 let kcp_hard_max_queued_segments : Int = 65535
 
 ///|
+/// KCP v1 rejects a single send whose segment count reaches WND_RCV (128).
+let kcp_protocol_max_send_segments : Int = 127
+
+///|
 /// Limits and scheduling values for one KCP control block.
 ///
 /// The defaults match the common KCP v1 control block, with explicit resource
@@ -47,7 +51,7 @@ pub fn kcp_default_config() -> KcpConfig {
     initial_rto_ms: 200,
     minimum_rto_ms: 100,
     maximum_rto_ms: 60000,
-    max_message_size: 128 * (1400 - 24),
+    max_message_size: 127 * (1400 - 24),
     max_queued_bytes: 4 * 1024 * 1024,
     max_segments_per_datagram: 32,
   }
@@ -151,7 +155,7 @@ pub fn kcp_config_is_valid(config : KcpConfig) -> Bool {
   (
     config.stream_mode ||
     (
-      kcp_config_max_fragments(config) <= 255 &&
+      kcp_config_max_fragments(config) <= kcp_protocol_max_send_segments &&
       kcp_config_max_fragments(config) <= config.receive_window
     )
   ) &&
@@ -182,7 +186,7 @@ pub fn kcp_config_max_fragments(config : KcpConfig) -> Int {
 }
 
 ///|
-/// Check whether a message can be represented by a bounded KCP fragment chain.
+/// Check whether one send call fits its configured byte and segment limits.
 pub fn kcp_config_accepts_message(
   config : KcpConfig,
   byte_length : Int,
@@ -198,6 +202,6 @@ pub fn kcp_config_accepts_message(
     } else {
       (byte_length - 1) / mss + 1
     }
-    config.stream_mode || fragments <= 255
+    fragments <= kcp_protocol_max_send_segments
   }
 }
