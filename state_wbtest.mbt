@@ -221,6 +221,51 @@ test "KCP send ceiling is enforced after stream tail coalescing" {
 }
 
 ///|
+test "datagram-wide framing and conversation checks precede state changes" {
+  let config = kcp_default_config()
+  config.set_no_congestion_control(true)
+  let sender = state_test_control(101L, config)
+  ignore(sender.send([1]))
+  ignore(sender.send([2]))
+  ignore(state_test_take_datagrams(sender.update(100L)))
+  assert_eq(sender.send_buffer.length(), 2)
+  assert_eq(sender.snd_una, 0L)
+  assert_eq(sender.remote_window, 128)
+
+  let valid_ack = state_test_segment(101L, Ack, 0L, 1L, 7, 100L, 0, [])
+  let wrong_conversation = state_test_segment(
+    102L,
+    WindowTell,
+    0L,
+    0L,
+    0,
+    0L,
+    0,
+    [],
+  )
+  assert_true(
+    sender.input(state_test_datagram([valid_ack, wrong_conversation]))
+    is Err(ConversationMismatch(101L, 102L)),
+  )
+  assert_eq(sender.send_buffer.length(), 2)
+  assert_eq(sender.snd_una, 0L)
+  assert_eq(sender.remote_window, 128)
+  assert_eq(sender.stats().received_datagrams, 0)
+
+  let encoded_ack = state_test_datagram([valid_ack])
+  encoded_ack.push(1)
+  encoded_ack.push(2)
+  encoded_ack.push(3)
+  assert_true(
+    sender.input(encoded_ack) is Err(MalformedDatagram(TruncatedHeader(24, 3))),
+  )
+  assert_eq(sender.send_buffer.length(), 2)
+  assert_eq(sender.snd_una, 0L)
+  assert_eq(sender.remote_window, 128)
+  assert_eq(sender.stats().received_datagrams, 0)
+}
+
+///|
 test "input orders and reassembles fragments while rejecting duplicates" {
   let control = state_test_control(42L, kcp_default_config())
   let later = state_test_datagram([
